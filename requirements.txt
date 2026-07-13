@@ -1,0 +1,13 @@
+# Core dependencies
+langchain
+langchain-ollama
+weaviate-client
+fastapi
+uvicorn
+python-multipart
+pydantic
+ollama
+python-dotenv
+
+# PDF processing
+PyPDF2
