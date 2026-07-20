@@ -83,27 +83,32 @@ RAG_Project/
 ├── app/
 │   └── main.py                 # FastAPI app, CORS, lifespan, /api/upload, /api/chat
 ├── config/
-│   ├── .env                    # Runtime environment variables (secrets / local config)
-│   └── settings.py             # Loads env → module-level constants
+│   ├── .env                    # Runtime environment variables
+│   ├── settings.py             # Loads env → module-level constants
+│   └── __pycache__/            # Compiled settings
 ├── data/
-│   └── raw/                    # Uploaded / sample PDFs on disk
+│   └── raw/                    # Uploaded / sample PDFs on disk (not yet created)
 ├── ingestion/                  # Document → chunks → embeddings
 │   ├── __init__.py
 │   ├── loader.py               # load_pdf()
 │   ├── chunker.py              # chunk_text()
-│   └── embedder.py             # get_embedder(), embed(), create_query_embeddings()
+│   ├── embedder.py             # get_embedder(), embed(), create_query_embeddings()
+│   └── __pycache__/
 ├── retrieval/                  # Vector store + RAG answer
 │   ├── __init__.py
 │   ├── vectorstore.py          # get_client(), create_collection(), store_documents()
-│   └── retriever.py            # ask()
+│   ├── retriever.py            # ask()
+│   └── __pycache__/
 ├── evaluation/
 │   ├── __init__.py
 │   └── ragas_eval.py           # Empty — RAGAS eval not implemented
-├── frontend/                   # React + Vite UI
+├── frontend/                   # React + Vite UI (primary)
 │   ├── index.html              # Title: "RAG Document Assistant"
 │   ├── package.json
+│   ├── package-lock.json
 │   ├── vite.config.ts          # Dev proxy: /api → http://localhost:8000
 │   ├── tsconfig.json
+│   ├── node_modules/
 │   └── src/
 │       ├── index.tsx           # React createRoot entry
 │       ├── App.tsx             # Layout: FileUpload + ChatInterface
@@ -111,13 +116,25 @@ RAG_Project/
 │           ├── FileUpload.tsx
 │           ├── ChatInterface.tsx
 │           └── SourceCitation.tsx
-├── .vscode/                    # Editor settings (e.g. python.analysis.extraPaths)
+├── next-app/                   # Unused Next.js 16 scaffold (shadcn/ui boilerplate)
+│   ├── app/{layout,page}.tsx
+│   ├── components/theme-provider.tsx
+│   ├── lib/, hooks/, components/ (.gitkeep)
+│   ├── package.json, tsconfig.json, next.config.ts
+│   ├── postcss.config.mjs, eslint.config.mjs
+│   ├── .prettierrc, .prettierignore, .gitignore
+│   ├── README.md, AGENTS.md
+│   └── node_modules/
+├── .vscode/
+│   ├── settings.json           # python.analysis.extraPaths: ./ingestion
+│   └── extensions.json         # recommends kilocode.kilo-code
 ├── docker-compose.yml          # Weaviate 1.38.1 only
 ├── requirements.txt
 ├── script.py                   # Utility: wipe Weaviate "Documents" collection
 ├── frontend.py                 # Empty stub (unused)
-├── Readme.md                   # Currently empty
-├── .gitignore                  # Currently only ignores ".env"
+├── Readme.md                   # Empty — setup docs missing
+├── .gitignore                  # Ignores .env and node_modules/
+├── NonePO1606 (1).pdf          # Sample PDF present in repo root
 └── systemarch.md               # This document
 ```
 
@@ -135,7 +152,11 @@ RAG_Project/
 | `chat_with_pdf` | `POST /api/chat` — call `ask()` → map sources for UI |
 | `lifespan` | Open Weaviate client, ensure collection exists, close on shutdown |
 
-CORS allows origin `http://localhost:5173` only.
+CORS allows all methods and headers from origin `http://localhost:5173` only.
+
+Only `FILEPATH` is imported from `config/settings`; other constants are consumed directly inside the ingestion/retrieval modules.
+
+Unused imports: `ollama`, `weaviate`.
 
 ### 5.2 `config/settings.py` — Configuration
 
@@ -153,42 +174,58 @@ Loads via `load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")` (e
 
 Also present in `config/.env` but **not read by settings:** `OLLAMA_API`.
 
-### 5.3 Ingestion
+### 5.3 `config/.env` — Runtime values
+
+```env
+OLLAMA_API=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:3b
+weaviate_url=http://localhost:8080
+EMBEDDING_MODEL=nomic-embed-text
+chunk_size=1000
+chunk_overlap=200
+top_k=5
+FILEPATH ="./data/raw/"
+```
+
+Note: `FILEPATH` has a space before `=` and quotes around the value; `settings.py` reads it as a raw string.
+
+### 5.4 Ingestion
 
 | File | Function | Behavior |
 |------|----------|----------|
-| `loader.py` | `load_pdf(file_path)` | Concatenates `extract_text()` from every PDF page |
+| `loader.py` | `load_pdf(file_path)` | Opens PDF with `PyPDF2.PdfReader`, concatenates `extract_text()` from every page |
 | `chunker.py` | `chunk_text(text, chunk_size=..., chunk_overlap=...)` | Sliding character windows: advance by `chunk_size - chunk_overlap` |
 | `embedder.py` | `get_embedder()`, `embed(chunks)`, `create_query_embeddings(query)` | LangChain Ollama embeddings for docs / single query |
 
-### 5.4 Retrieval
+### 5.5 Retrieval
 
 | File | Function | Behavior |
 |------|----------|----------|
 | `vectorstore.py` | `get_client()` | `weaviate.connect_to_local()` |
 | | `create_collection(client)` | Creates `Documents` if missing (idempotent; does **not** wipe existing data) |
-| | `store_documents(chunks, embeddings, client, source_filename)` | Batch insert with properties + custom vectors |
+| | `store_documents(chunks, embeddings, client, source_filename)` | Batch insert with properties + custom vectors; errors per object are printed and skipped |
 | `retriever.py` | `ask(question, client, llm_model=..., top_k=...)` | Embed query → `near_vector` → build prompt → `ollama.generate` → `{answer, sources}` |
 
-### 5.5 Frontend
+### 5.6 Frontend
 
 | Component | Responsibility |
 |-----------|----------------|
-| `App.tsx` | Renders `FileUpload` then `ChatInterface` |
-| `FileUpload.tsx` | File picker → `FormData` → `POST /api/upload`; status Idle / Uploading / success / fail |
-| `ChatInterface.tsx` | Message list, Enter-to-send, `POST /api/chat`, renders `SourceCitation` |
-| `SourceCitation.tsx` | Displays `source`, linked `title` (`url`) |
+| `App.tsx` | Renders `<FileUpload/>` then `<ChatInterface/>` inside `div.app` |
+| `FileUpload.tsx` | File picker → `FormData` → `POST /api/upload`; status Idle / Uploading... / Upload successful! / Upload failed. |
+| `ChatInterface.tsx` | Message list, Enter-to-send, `POST /api/chat`, renders `SourceCitation` per source |
+| `SourceCitation.tsx` | Renders `<strong>{source}:</strong> <a href={url}>{title}</a>` |
 
-No shared CSS framework; styling is inline. Single page; no React Router.
+No shared CSS framework; all styling is inline. Single page; no React Router.
 
-### 5.6 Utilities & placeholders
+### 5.7 Utilities & placeholders
 
 | Path | Purpose |
 |------|---------|
-| `script.py` | Deletes entire Weaviate collection `"Documents"` |
+| `script.py` | Deletes entire Weaviate collection `"Documents"` using new client API |
 | `evaluation/ragas_eval.py` | Empty — planned RAG quality evaluation |
-| `frontend.py` | Empty stub |
-| `Readme.md` | Empty — setup docs live here or should |
+| `frontend.py` | Empty stub (0 bytes, unused) |
+| `Readme.md` | Empty — setup docs missing |
+| `next-app/` | Unused Next.js 16 scaffold (shadcn/ui boilerplate, not connected to API) |
 
 ---
 
@@ -205,7 +242,7 @@ OpenAPI UI: `http://localhost:8000/docs`
 
 ```
 PDF file
-  → save to f"{FILEPATH}{file.filename}"
+  → save to Path(FILEPATH) / Path(file.filename).name
   → load_pdf(file_path)
   → chunk_text(text)
   → embed(chunks)
@@ -246,6 +283,7 @@ Typical embedding dimensionality depends on the Ollama model (e.g. nomic-embed-t
 
 - PDFs under `FILEPATH` (intended: `./data/raw/`).
 - Weaviate persistence: Docker volume `weaviate_data`.
+- A sample PDF (`NonePO1606 (1).pdf`) exists in the repo root.
 
 No SQL database, Redis, or object store.
 
@@ -326,10 +364,11 @@ From `config/.env` / `settings.py`:
 
 ### Config pitfalls
 
-1. `FILEPATH` without trailing slash in `.env` produces paths like `./data/rawmyfile.pdf` instead of `./data/raw/myfile.pdf`.
+1. `FILEPATH` without trailing slash (or with extra spaces/quotes in `.env`) produces inconsistent paths.
 2. `int(os.getenv(...))` with no defaults → crash if vars missing. (`CHUNK_SIZE`, `CHUNK_OVERLAP`, and `TOP_K` have safe string defaults; `OLLAMA_MODEL`, `EMBEDDING_MODEL`, `weaviate_url`, and `FILEPATH` have no defaults and will be `None`.)
 3. Embedding model name typos (e.g. `nomic-embedding-text` vs `nomic-embed-text`) fail at runtime.
 4. `weaviate_url` is loaded but never used; client always connects via `connect_to_local()`.
+5. `main.py` uses `Path(file.filename).name` to strip directory components, which prevents basic path traversal, but there is still no `.pdf` allowlist or size limit.
 
 ---
 
@@ -340,7 +379,7 @@ From `config/.env` / `settings.py`:
 | Auth | None |
 | Sessions / chat history | None (stateless per request) |
 | Tenancy | Single global `Documents` collection |
-| Upload validation | No MIME/size/PDF checks; filename used directly in path |
+| Upload validation | `Path(file.filename).name` strips directories; no MIME/size/PDF checks |
 | Weaviate | Anonymous access enabled |
 | CORS | Locked to local Vite origin (dev-oriented) |
 
@@ -399,18 +438,19 @@ These are verified against the source as of this document:
 
 | Severity | Issue | Location |
 |----------|--------|----------|
-| **High** | `FILEPATH` without trailing slash produces concatenated paths (`./data/rawmyfile.pdf`) | `app/main.py:32`, `config/settings.py` |
-| **High** | Unvalidated `file.filename` in path → overwrite / path traversal risk | `app/main.py:32-33` |
+| **High** | `OLLAMA_MODEL`, `EMBEDDING_MODEL`, `weaviate_url`, `FILEPATH` have no defaults → `None` if missing | `config/settings.py:8-14` |
+| **High** | Embedding model name typos fail at runtime with no clear message | `config/settings.py:9`, `ingestion/embedder.py:5` |
 | **Medium** | Re-uploading the same PDF **duplicates** chunks (no delete-by-source) | `retrieval/vectorstore.py:19-29` |
-| **Medium** | Chat sources are chunk texts, not filenames; UI links are `#` | `retriever.py:15-25`, `main.py:43-46` |
+| **Medium** | Chat sources are chunk texts, not filenames; UI links are `#` | `retriever.py:15-25`, `app/main.py:44-47` |
 | **Medium** | Sync Ollama calls on request thread → poor concurrency under load | upload + chat paths |
 | **Medium** | `ask()` retrieves only `content`, ignoring stored `source` filename | `retriever.py:15` |
-| **Medium** | `chunker.py` has duplicate import `CHUNK_SIZE` twice | `ingestion/chunker.py:2` |
-| **Low** | Unused imports (`ollama`, `weaviate` in `main.py`; `embed` in `retriever.py`; `load_pdf` in `chunker.py`) | several modules |
-| **Low** | `.gitignore` only lists `.env` — risk of committing `node_modules`, PDFs, caches | `.gitignore` |
+| **Low** | Unused imports (`ollama`, `weaviate` in `app/main.py`; `embed` in `retriever.py`; `load_pdf` in `ingestion/chunker.py`) | several modules |
+| **Low** | `.gitignore` only lists `.env` and `node_modules/` — risk of committing `__pycache__`, PDFs, caches | `.gitignore` |
 | **Low** | Empty `Readme.md`, empty `evaluation/ragas_eval.py`, empty `frontend.py` | repo hygiene |
 | **Low** | `store_documents()` swallows batch errors with `print()`; failed objects are silently skipped | `retrieval/vectorstore.py:23-29` |
-| **Low** | `ingested{N}` missing space in upload response message | `app/main.py:39` |
+| **Low** | `Ingested{N}` missing space in upload response message | `app/main.py:40` |
+| **Low** | `Stored{N}chunks` missing spaces in vectorstore log message | `retrieval/vectorstore.py:31` |
+| **Low** | Unused `next-app/` scaffold in repo root (not connected to API) | `next-app/` |
 
 ---
 
@@ -420,10 +460,10 @@ Prioritized so early items unblock reliability; later items raise product qualit
 
 ### P0 — Make it reliably runnable
 
-1. **Normalize `FILEPATH`**: ensure it ends with `/` or use `Path` joining in `main.py`.
-2. **Sanitize uploads**: use `Path(file.filename).name` to strip directories; allowlist `.pdf`; add max size.
+1. **Pin versions** in `requirements.txt` for reproducibility.
+2. **Sanitize uploads**: allowlist `.pdf`; add max size; validate MIME type.
 3. **Document required env vars** in `Readme.md` with example `config/.env`.
-4. **Pin versions** in `requirements.txt` for reproducibility.
+4. **Expand `.gitignore`**: `__pycache__/`, `.venv/`, `data/raw/*`, `.env`, build artifacts, `.pdf` samples.
 
 ### P1 — Correctness & RAG quality
 
@@ -438,25 +478,24 @@ Prioritized so early items unblock reliability; later items raise product qualit
 
 11. **Try/except + structured errors** on upload/chat (clear 4xx/5xx messages to the UI).
 12. **Auth for non-local use**: API key or simple login before expose beyond localhost.
-13. **Expand `.gitignore`**: `__pycache__/`, `node_modules/`, `data/raw/*`, `.venv/`, `.env`, build artifacts.
-14. **Health endpoints**: `/health` checking Weaviate + Ollama readiness.
+13. **Health endpoints**: `/health` checking Weaviate + Ollama readiness.
 
 ### P3 — Product & UX
 
-15. **Populate `Readme.md`** with architecture pointer, setup, troubleshooting (this file can stay the deep dive).
-16. **Document list UI**: show ingested files; delete/reindex one document.
-17. **Chat UX**: loading states, error toasts, distinguish user vs assistant bubbles, stream tokens if Ollama streaming is enabled.
-18. **Conversation context**: optional short history window for follow-ups (with care for prompt size).
-19. **Accept more formats**: DOCX, TXT, Markdown — same chunk/embed path.
-20. **Basic frontend polish**: shared layout, accessible forms, restrict file input to `accept="application/pdf"`.
+14. **Populate `Readme.md`** with architecture pointer, setup, troubleshooting (this file can stay the deep dive).
+15. **Document list UI**: show ingested files; delete/reindex one document.
+16. **Chat UX**: loading states, error toasts, distinguish user vs assistant bubbles, stream tokens if Ollama streaming is enabled.
+17. **Conversation context**: optional short history window for follow-ups (with care for prompt size).
+18. **Accept more formats**: DOCX, TXT, Markdown — same chunk/embed path.
+19. **Basic frontend polish**: shared layout, accessible forms, restrict file input to `accept="application/pdf"`.
 
 ### P4 — Scalability & ops
 
-21. **Background ingestion**: queue long PDFs (Celery / ARQ / FastAPI `BackgroundTasks`) so upload returns quickly.
-22. **Add Ollama to Compose** (or document host networking clearly) so `OLLAMA_API_ENDPOINT` is valid.
-23. **Tests**: unit tests for chunker/loader; API tests with mocked Ollama/Weaviate; one smoke e2e path.
-24. **Observability**: structured logs, latency timings for embed / retrieve / generate.
-25. **Hybrid search / reranking**: BM25 + vectors, or a cross-encoder reranker for better top‑k quality.
+20. **Background ingestion**: queue long PDFs (Celery / ARQ / FastAPI `BackgroundTasks`) so upload returns quickly.
+21. **Add Ollama to Compose** (or document host networking clearly) so `OLLAMA_API_ENDPOINT` is valid.
+22. **Tests**: unit tests for chunker/loader; API tests with mocked Ollama/Weaviate; one smoke e2e path.
+23. **Observability**: structured logs, latency timings for embed / retrieve / generate.
+24. **Hybrid search / reranking**: BM25 + vectors, or a cross-encoder reranker for better top‑k quality.
 
 ---
 
